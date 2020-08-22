@@ -6,7 +6,10 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
 from scipy.stats import moment
+
+globalModel = 0
 
 def calcAccuracy(goodImage, testImage, mask):
     goodAccPix = 0
@@ -62,19 +65,29 @@ def convertOko(inputPath, maskPath):
     io.imsave('output.png', image)
 
 
-def artificialOko(inputPath, maskPath, inputAIPath, maskAIPath, idealAIPath):
-    testImgMask = io.imread(maskPath, as_gray=True)
-    testImg = io.imread(inputPath)
+def artificialOko():
 
-    mask = io.imread(maskAIPath, as_gray=True)
-    image = io.imread(inputAIPath)
-    output = io.imread(idealAIPath, as_gray=True)
+    mainPath = "D:/STUDIA/6 semestr/InformatykaWMedycynie/Projekt2/"
 
-    testImg = testImg[:, :, 1]  # green only
-    image = image[:, :, 1]  # green only
+    mask = []
+    image = []
+    output = []
+
+    for i in range(1, 7):
+        if i < 10:
+            mask.append(io.imread(mainPath + "mask/0" + str(i) + "_h_mask.tif", as_gray=True))
+            image.append(io.imread(mainPath + "images/0" + str(i) + "_h.jpg"))
+            output.append(io.imread(mainPath + "manual1/0" + str(i) + "_h.tif", as_gray=True))
+        else:
+            mask.append(io.imread(mainPath + "mask/" + str(i) + "_h_mask.tif", as_gray=True))
+            image.append(io.imread(mainPath + "images/" + str(i) + "_h.jpg"))
+            output.append(io.imread(mainPath + "manual1/" + str(i) + "_h.tif", as_gray=True))
+
+    for i in range(1, 7):
+        image[i - 1] = image[i - 1][:, :, 1]  # green only
 
     # shape zwraca liczbę wierszy i liczbę kolumn
-    h, w = testImg.shape[0], testImg.shape[1]
+    h, w = image[0].shape[0], image[0].shape[1]
 
     # rozmiar wycinka = 5 x 5
     PATCH_SIZE = 5
@@ -86,18 +99,22 @@ def artificialOko(inputPath, maskPath, inputAIPath, maskAIPath, idealAIPath):
     # Faza uczenia
     answers = []
     features = []
+    nr = -1
 
     # j = wiersz
     for j in range(0, h - PATCH_SIZE, LEARN_OFFSET):
         # i = kolumna
         for i in range(0, w - PATCH_SIZE, LEARN_OFFSET):  # szukam punktow wyjsciowych
-            if mask[j + HALF_PATCH_SIZE, i + HALF_PATCH_SIZE] == 0:
+            nr = nr + 1
+            if nr > 5:
+                nr = 0
+            if mask[nr][j + HALF_PATCH_SIZE, i + HALF_PATCH_SIZE] == 0:
                 continue
-            if output[j + HALF_PATCH_SIZE, i + HALF_PATCH_SIZE] > 0:
+            if output[nr][j + HALF_PATCH_SIZE, i + HALF_PATCH_SIZE] > 0:
                 answers.append(1)
             else:
                 answers.append(0)
-            patch = image[j:(j + PATCH_SIZE), i:(i + PATCH_SIZE)]
+            patch = image[nr][j:(j + PATCH_SIZE), i:(i + PATCH_SIZE)]
             m = moment(patch, [2, 3], axis=None)
             features.append([np.mean(patch), m[0], m[1]])
 
@@ -108,8 +125,37 @@ def artificialOko(inputPath, maskPath, inputAIPath, maskAIPath, idealAIPath):
 
     # mainfeatures = list(zip(features1, features2, features3))
     # KNeighborsClassifier(n_neighbors=3, n_jobs=-1)
-    model = make_pipeline(StandardScaler(), RandomForestClassifier(n_estimators=10))
-    model.fit(X, y)
+
+    param_grid = {
+        'n_estimators': [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        'max_features': ['auto', 'sqrt', 'log2'],
+        'max_depth': [4, 5, 6, 7, 8],
+        'criterion': ['gini', 'entropy']
+    }
+
+    rfc = RandomForestClassifier(n_estimators=10)
+
+    GSCV = GridSearchCV(estimator=rfc, param_grid=param_grid, cv=5)
+    global globalModel
+    globalModel = make_pipeline(StandardScaler(), GSCV)
+
+    globalModel.fit(X, y)
+
+    print(GSCV.best_estimator_)
+
+
+def Predictor(inputPath, maskPath):
+    testImgMask = io.imread(maskPath, as_gray=True)
+    testImg = io.imread(inputPath)
+
+    testImg = testImg[:, :, 1]  # green only
+
+    # shape zwraca liczbę wierszy i liczbę kolumn
+    h, w = testImg.shape[0], testImg.shape[1]
+
+    # rozmiar wycinka = 5 x 5
+    PATCH_SIZE = 5
+    HALF_PATCH_SIZE = 2
 
     TEST_OFFSET = 1
     outputArray = np.zeros((h, w), dtype=np.uint8)
@@ -126,7 +172,7 @@ def artificialOko(inputPath, maskPath, inputAIPath, maskAIPath, idealAIPath):
             X_test.append([np.mean(patch), m[0], m[1]])
 
         # y_pred = model.predict_proba(np.array(X_test))[:, 1]
-        y_pred = model.predict(np.array(X_test))
+        y_pred = globalModel.predict(np.array(X_test))
 
         for p, i in enumerate(range(0, w - PATCH_SIZE, TEST_OFFSET)):  # szukam punktow wyjsciowych
             if testImgMask[j, i] == 0:
@@ -137,6 +183,7 @@ def artificialOko(inputPath, maskPath, inputAIPath, maskAIPath, idealAIPath):
 
     io.imsave("output.png", outputArray)
 
+
 class MainFrame(wx.Frame):
     def __init__(self, *args, **kw):
         super(MainFrame, self).__init__(*args, **kw)
@@ -145,9 +192,6 @@ class MainFrame(wx.Frame):
         self.inputPath = 0
         self.maskPath = 0
         self.idealPath = 0
-        self.inputAIPath = 0
-        self.maskAIPath = 0
-        self.idealAIPath = 0
 
         self.image1toggle = 0
         self.image23toggle = 0
@@ -172,8 +216,11 @@ class MainFrame(wx.Frame):
 
         fastButton = wx.Button(self.panel, wx.ID_ANY, "Technika przetwarzania obrazu", size=(200, 32))
         fastButton.Bind(wx.EVT_BUTTON, self.onFastButton)
-        slowButton = wx.Button(self.panel, wx.ID_ANY, "Technika z użyciem klasyfikatora", size=(200, 32))
-        slowButton.Bind(wx.EVT_BUTTON, self.onSlowButton)
+        learnButton = wx.Button(self.panel, wx.ID_ANY, "Uczenie klasyfikatora", size=(200, 32))
+        learnButton.Bind(wx.EVT_BUTTON, self.onLearnButton)
+        self.slowButton = wx.Button(self.panel, wx.ID_ANY, "Technika z użyciem klasyfikatora", size=(200, 32))
+        self.slowButton.Bind(wx.EVT_BUTTON, self.onSlowButton)
+        self.slowButton.Disable()
 
         headerSizer = wx.BoxSizer(wx.HORIZONTAL)
         imageSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -204,7 +251,8 @@ class MainFrame(wx.Frame):
         pathSizer.Add(self.pathText2, 1, wx.ALIGN_CENTER)
         pathSizer.Add(self.pathText3, 1, wx.ALIGN_CENTER)
         buttonSizer.Add(fastButton, wx.SizerFlags().Border(wx.ALL, 5))
-        buttonSizer.Add(slowButton, wx.SizerFlags().Border(wx.ALL, 5))
+        buttonSizer.Add(learnButton, wx.SizerFlags().Border(wx.ALL, 5))
+        buttonSizer.Add(self.slowButton, wx.SizerFlags().Border(wx.ALL, 5))
         variableSizer.Add(self.variableText1, 1, wx.ALIGN_CENTER)
         variableSizer.Add(self.variableText2, 1, wx.ALIGN_CENTER)
         variableSizer.Add(self.variableText3, 1, wx.ALIGN_CENTER)
@@ -228,11 +276,6 @@ class MainFrame(wx.Frame):
         idealImageItem = fileMenu.Append(-1, "Otwórz &idealny obraz wynikowy\tCtrl-I",
                                          "Wybierz wyjściowy obraz idealny do porównania")
         fileMenu.AppendSeparator()
-        inputLearnItem = fileMenu.Append(-1, "Otwórz obraz wejściowy do nauki", "Wybierz wejściowy obraz do nauki SI")
-        maskLearnItem = fileMenu.Append(-1, "Otwórz maskę wejściową do nauki", "Wybierz wejściową maskę obrazu do nauki SI")
-        idealLearnItem = fileMenu.Append(-1, "Otwórz idealny obraz do nauki",
-                                         "Wybierz wyjściowy obraz idealny do nauki SI")
-        fileMenu.AppendSeparator()
         outputImageItem = fileMenu.Append(-1, "Zapi&sz obraz wyjściowy\tCtrl-S", "Zapisz wyjściowy obraz naczyń dna oka")
         fileMenu.AppendSeparator()
         exitItem = fileMenu.Append(wx.ID_EXIT)
@@ -249,9 +292,6 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.OnInputOpen, inputImageItem)
         self.Bind(wx.EVT_MENU, self.OnMaskOpen, maskImageItem)
         self.Bind(wx.EVT_MENU, self.OnIdealOpen, idealImageItem)
-        self.Bind(wx.EVT_MENU, self.OnInputAIOpen, inputLearnItem)
-        self.Bind(wx.EVT_MENU, self.OnMaskAIOpen, maskLearnItem)
-        self.Bind(wx.EVT_MENU, self.OnIdealAIOpen, idealLearnItem)
         self.Bind(wx.EVT_MENU, self.OnExit, exitItem)
         self.Bind(wx.EVT_MENU, self.OnAbout, aboutItem)
 
@@ -307,20 +347,18 @@ class MainFrame(wx.Frame):
         else:
             wx.MessageBox(errorText)
 
+    def onLearnButton(self, event):
+        artificialOko()
+        self.slowButton.Enable()
+
     def onSlowButton(self, event):
         errorText = ""
         if self.inputPath == 0:
             errorText += "Otwórz plik wejściowy\n"
         if self.maskPath == 0:
             errorText += "Otwórz maskę wejściową\n"
-        if self.inputAIPath == 0:
-            errorText += "Otwórz obraz wejściowy do nauki\n"
-        if self.maskAIPath == 0:
-            errorText += "Otwórz maskę wejściową do nauki\n"
-        if self.idealAIPath == 0:
-            errorText += "Otwórz idealny obraz do nauki\n"
         if errorText == "":
-            artificialOko(self.inputPath, self.maskPath, self.inputAIPath, self.maskAIPath, self.idealAIPath)
+            Predictor(self.inputPath, self.maskPath)
             self.image3 = wx.Bitmap("output.png").ConvertToImage().Scale(438, 292, wx.IMAGE_QUALITY_HIGH)
             self.image23toggle = 0
             self.headerText2.SetLabel("Obraz idealny")
@@ -333,7 +371,7 @@ class MainFrame(wx.Frame):
             img3 = io.imread("output.png", as_gray=True)
             imgmask = io.imread(self.maskPath, as_gray=True)
             dat = calcAccuracy(img2, img3, imgmask)
-            self.variableText2.SetLabel(dat)    
+            self.variableText2.SetLabel(dat)
 
             self.panel.Layout()
         else:
@@ -395,15 +433,6 @@ class MainFrame(wx.Frame):
             self.idealImage.Bitmap = self.image2
             self.pathText2.SetLabel(self.idealPath)
             self.panel.Layout()
-
-    def OnInputAIOpen(self, event):
-        self.inputAIPath = self.openFile()
-
-    def OnMaskAIOpen(self, event):
-        self.maskAIPath = self.openFile()
-
-    def OnIdealAIOpen(self, event):
-        self.idealAIPath = self.openFile()
 
     def OnAbout(self, event):
         wx.MessageBox("Dno Oka v0.1.0\nPUT INF 06/2020\nKrzysztof Schneider\t\t138285\nMieszko Taranczewski\t110225",
